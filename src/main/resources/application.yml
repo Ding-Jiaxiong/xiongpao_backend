@@ -2,24 +2,42 @@ server:
   port: 8080
   servlet:
     context-path: /api
+    session:
+      cookie:
+        domain: localhost
 
 spring:
+  profiles:
+    active: dev
   application:
     name: user-center
 
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/xiongpao
+    url: jdbc:mysql://localhost:3306/xiongpao?serverTimezone=Asia/Shanghai
     username: root
     password: zzz
+
+  mvc:
+    pathmatch:
+      matching-strategy: ant_path_matcher
+
+  # redis 配置
+  redis:
+    port: 6379
+    host: 120.53.247.246
+    database: 0
 
   # session 失效时间
   session:
     timeout: 86400
+    store-type: redis
+
 
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: false
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
 
   global-config:
     db-config:

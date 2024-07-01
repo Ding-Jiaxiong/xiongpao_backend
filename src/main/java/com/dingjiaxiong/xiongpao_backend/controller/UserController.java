@@ -1,25 +1,29 @@
 package com.dingjiaxiong.xiongpao_backend.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.dingjiaxiong.xiongpao_backend.common.BaseResponse;
 import com.dingjiaxiong.xiongpao_backend.common.ErrorCode;
 import com.dingjiaxiong.xiongpao_backend.common.ResultUtils;
 import com.dingjiaxiong.xiongpao_backend.exception.BusinessException;
 import com.dingjiaxiong.xiongpao_backend.model.domain.User;
-import com.dingjiaxiong.xiongpao_backend.model.domain.request.DeleteUserRequest;
-import com.dingjiaxiong.xiongpao_backend.model.domain.request.UserLoginRequest;
-import com.dingjiaxiong.xiongpao_backend.model.domain.request.UserRegisterRequest;
+import com.dingjiaxiong.xiongpao_backend.model.request.DeleteUserRequest;
+import com.dingjiaxiong.xiongpao_backend.model.request.UserLoginRequest;
+import com.dingjiaxiong.xiongpao_backend.model.request.UserRegisterRequest;
 import com.dingjiaxiong.xiongpao_backend.service.UserService;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.util.CollectionUtils;
 import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
-import static com.dingjiaxiong.xiongpao_backend.contant.UserConstant.ADMIN_ROLE;
 import static com.dingjiaxiong.xiongpao_backend.contant.UserConstant.USER_LOGIN_STATE;
 
 /**
@@ -29,7 +33,8 @@ import static com.dingjiaxiong.xiongpao_backend.contant.UserConstant.USER_LOGIN_
  */
 @RestController
 @RequestMapping("/user")
-//@CrossOrigin
+@CrossOrigin(origins = {"http://localhost:3000", "http://localhost:8000"})
+@Slf4j
 /**
  * 后端直接支持跨域不安全
  */
@@ -37,6 +42,9 @@ public class UserController {
 
     @Resource
     private UserService userService;
+
+    @Resource
+    private RedisTemplate<String, Object> redisTemplate;
 
     /**
      * 用户注册
@@ -123,7 +131,7 @@ public class UserController {
     @GetMapping("/search")
     public BaseResponse<List<User>> searchUsers(String username, HttpServletRequest request) {
 
-        if (!isAdmin(request)) {
+        if (!userService.isAdmin(request)) {
             throw new BusinessException(ErrorCode.NO_AUTH, "缺少管理员权限");
         }
 
@@ -136,10 +144,57 @@ public class UserController {
         return ResultUtils.success(list);
     }
 
+    @GetMapping("/search/tags")
+    public BaseResponse<List<User>> searchUsersByTags(@RequestParam(required = false) List<String> tagNameList) {
+        if (CollectionUtils.isEmpty(tagNameList)) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR);
+        }
+        List<User> userList = userService.searchUsersByTags(tagNameList);
+        return ResultUtils.success(userList);
+    }
+
+
+    @GetMapping("/recommend")
+    public BaseResponse<Page<User>> recommendUsers(long pageSize, long pageNum, HttpServletRequest request) {
+
+        User loginUser = userService.getLoginUser(request);
+        String redisKey = String.format("xiongpao:user:recommend:%s", loginUser.getId());
+
+        ValueOperations<String, Object> valueOperations = redisTemplate.opsForValue();
+        // 如果有缓存，直接读缓存
+        Page<User> userPage = (Page<User>) valueOperations.get(redisKey);
+        if (userPage != null) {
+            return ResultUtils.success(userPage);
+        }
+        // 无缓存，查数据库
+        QueryWrapper<User> queryWrapper = new QueryWrapper<>();
+        userPage = userService.page(new Page<>(pageNum, pageSize), queryWrapper);
+        // 写缓存
+        try {
+            valueOperations.set(redisKey, userPage, 30000, TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            log.error("redis set key error", e);
+        }
+        return ResultUtils.success(userPage);
+    }
+
+
+    @PostMapping("/update")
+    public BaseResponse<Integer> updateUser(@RequestBody User user, HttpServletRequest request) {
+        // 校验参数是否为空
+        if (user == null) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR);
+        }
+        User loginUser = userService.getLoginUser(request);
+        int result = userService.updateUser(user, loginUser);
+        return ResultUtils.success(result);
+    }
+
+
     @PostMapping("/delete")
     public BaseResponse<Boolean> deleteUser(@RequestBody DeleteUserRequest deleteUserRequest, HttpServletRequest request) {
 
-        if (!isAdmin(request)) {
+        if (!userService.isAdmin(request)) {
             return null;
         }
 
@@ -152,16 +207,20 @@ public class UserController {
     }
 
     /**
-     * 是否为管理员
+     * 获取最匹配的用户
      *
+     * @param num
      * @param request
      * @return
      */
-    private boolean isAdmin(HttpServletRequest request) {
-        // 仅管理员可查询和删除
-        Object userObj = request.getSession().getAttribute(USER_LOGIN_STATE);
-        User user = (User) userObj;
-        return user != null && user.getUserRole() == ADMIN_ROLE;
+    @GetMapping("/match")
+    public BaseResponse<List<User>> matchUsers(long num, HttpServletRequest request) {
+        if (num <= 0 || num > 20) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR);
+        }
+        User user = userService.getLoginUser(request);
+        return ResultUtils.success(userService.matchUsers(num, user));
     }
+
 
 }
